@@ -32,7 +32,7 @@ stages:
       inputs:
         containerRegistry: 'docker-hub-connection'
         command: 'buildAndPush'
-        dockerfile: '$(Build.SourcesDirectory)/backend_api/backend_api_csharp/Dockerfile'
+        dockerfile: '$(Build.SourcesDirectory)/azure/backend_api/backend_api_csharp/Dockerfile'
         repository: '$(IMAGE_NAME)'
         tags: |
           $(TAG)
