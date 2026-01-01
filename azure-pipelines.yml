@@ -23,7 +23,7 @@ stages:
     - task: Docker@2
       displayName: Build and push image to Docker Hub
       inputs:
-        containerRegistry: 'dockerhub-connection'
+        containerRegistry: 'docker-hub-connection'
         command: 'buildAndPush'
         dockerfile: '$(Build.SourcesDirectory)/backend_api/backend_api_csharp/Dockerfile'
         repository: '$(IMAGE_NAME)'
