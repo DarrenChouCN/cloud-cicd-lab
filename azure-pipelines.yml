@@ -20,6 +20,13 @@ stages:
     pool:
       vmImage: ubuntu-latest
     steps:
+    - script: |
+        echo "Sources dir: $(Build.SourcesDirectory)"
+        ls -la $(Build.SourcesDirectory)
+        echo "Find Dockerfile:"
+        find $(Build.SourcesDirectory) -maxdepth 6 -type f -iname "dockerfile" -print
+      displayName: "Debug: locate Dockerfile"
+
     - task: Docker@2
       displayName: Build and push image to Docker Hub
       inputs:
