@@ -1,0 +1,63 @@
+trigger:
+  - main
+
+resources:
+  - repo: self
+
+variables:
+  IMAGE_NAME: "darrenchoucn/aca-album-backend-api"
+  TAG: "$(Build.BuildId)"
+
+  RESOURCE_GROUP: "rg-cicd-aca-dev-ase-001"
+  CONTAINERAPPS_ENVIRONMENT: "acae-cicd-aca-dev-ase-001"
+  CONTAINERAPPS_APP: "aca-albumapi-cicd-aca-dev-ase-001"
+
+  APP_DIR: "azure/01-container-apps-cicd/src/albumapi-dotnet"
+  DOCKERFILE_PATH: "$(APP_DIR)/Dockerfile"
+
+stages:
+  - stage: Build
+    displayName: Build and push image
+    jobs:
+      - job: Build
+        displayName: Build
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - script: |
+              echo "Sources dir: $(Build.SourcesDirectory)"
+              ls -la $(Build.SourcesDirectory)
+              echo "Find Dockerfile:"
+              find $(Build.SourcesDirectory) -maxdepth 6 -type f -iname "dockerfile" -print
+            displayName: "Debug: locate Dockerfile"
+
+          - task: Docker@2
+            displayName: Build and push image to Docker Hub
+            inputs:
+              containerRegistry: "docker-hub-connection"
+              command: "buildAndPush"
+              repository: "$(IMAGE_NAME)"
+              dockerfile: "$(Build.SourcesDirectory)/$(DOCKERFILE_PATH)"
+              buildContext: "$(Build.SourcesDirectory)/$(APP_DIR)"
+              tags: |
+                $(TAG)
+
+  - stage: Deploy
+    displayName: Deploy to Container Apps
+    dependsOn: Build
+    jobs:
+      - job: Deploy
+        displayName: Deploy
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - task: AzureContainerApps@1
+            displayName: Deploy new container version
+            inputs:
+              azureSubscription: "azure-connection"
+              imageToDeploy: "$(IMAGE_NAME):$(TAG)"
+              containerAppName: "$(CONTAINERAPPS_APP)"
+              resourceGroup: "$(RESOURCE_GROUP)"
+              containerAppEnvironment: "$(CONTAINERAPPS_ENVIRONMENT)"
+              targetPort: "3500"
+              ingress: "external"

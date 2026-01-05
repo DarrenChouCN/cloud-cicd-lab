@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp-deployment
+spec:
+  selector:
+    matchLabels:
+      app: webapp
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        # image: __acr_name__.azurecr.io/webapp:__tag__
+        # image: acraks013579.azurecr.io/dotnet-app:1.0.0
+        image: houssemdocker/webapp:v8.0.2
+        # image: ACR_NAME/DOCKER_IMAGE:TAG
+        # image: __ACR_NAME__.azurecr.io/__DOCKER_IMAGE__:__TAG__
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 100m
+            memory: "200Mi"
+          limits:
+            cpu: 300m
+            memory: "500Mi"
+        env:
+          - name: ConnectionStrings__WebAppContext
+            valueFrom:
+              configMapKeyRef:
+                name: mssql-connection-configmap
+                key: db-connection-string
+        #     secretKeyRef:
+        #       name: mssql-secret
+        #       key: db-connection-string-secret
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: webapp-service
+spec:
+  selector:
+    app: webapp
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+  type: LoadBalancer
