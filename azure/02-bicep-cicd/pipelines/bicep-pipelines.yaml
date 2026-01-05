@@ -1,0 +1,118 @@
+name: Deploy Bicep $(Build.BuildId)
+
+trigger: none
+# - main
+
+resources:
+  - repo: self
+
+variables:
+  # ---- naming & region (match your container-app naming style) ----
+  ENV: "dev"
+  LOCATION: "australiasoutheast"
+  REGION_CODE: "ase"
+
+  # One run -> one RG (easy cleanup, avoids conflicts)
+  BASE: "cicd-bicep-$(ENV)-$(REGION_CODE)-$(Build.BuildId)"
+  RESOURCE_GROUP: "rg-$(BASE)"
+  DEPLOYMENT_NAME: "bicep-$(Build.BuildId)"
+
+  # ---- service connection & notification ----
+  AZURE_SUBSCRIPTION: "azure-connection"
+  NOTIFY_USERS: "$(Build.RequestedForEmail)"
+
+  # ---- repo paths (keep unit structure consistent) ----
+  BICEP_DIR: "azure/02-bicep-cicd/src"
+  TEMPLATE_FILE: "$(BICEP_DIR)/webapp-linux.bicep"
+
+  # Windows paths for ARMTTK (task commonly runs on Windows agents)
+  BICEP_DIR_WIN: "azure\\02-bicep-cicd\\src"
+  RESULTS_DIR_WIN: "azure\\02-bicep-cicd\\results"
+
+  # ---- template parameters (make it generic) ----
+  # NOTE: Web App names must be globally unique; this suffix avoids collisions.
+  WEBAPP_NAME: "bicep$(REGION_CODE)$(Build.BuildId)"
+  DEPLOY_PARAMETERS: "webAppName=$(WEBAPP_NAME)"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  - stage: preDeploy
+    displayName: "PreDeploy - scan & what-if"
+    jobs:
+      - job: scanWhatif
+        displayName: "Scan Bicep and run what-if"
+        pool:
+          vmImage: "windows-2022"
+        steps:
+          - task: RunARMTTKTests@1
+            displayName: "Scan Bicep files (ARM TTK)"
+            inputs:
+              templatelocation: "$(Build.SourcesDirectory)\\$(BICEP_DIR_WIN)"
+              resultLocation: "$(Build.SourcesDirectory)\\$(RESULTS_DIR_WIN)"
+              allTemplatesMain: false
+              cliOutputResults: true
+              ignoreExitCode: true
+
+          - task: PublishTestResults@2
+            displayName: "Publish ARM TTK results"
+            inputs:
+              testResultsFormat: "NUnit"
+              testResultsFiles: "$(Build.SourcesDirectory)\\$(RESULTS_DIR_WIN)\\*-armttk.xml"
+            condition: always()
+
+          - task: AzureCLI@2
+            displayName: "Preview changes (what-if)"
+            inputs:
+              azureSubscription: "$(AZURE_SUBSCRIPTION)"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                az --version
+                echo "Using RG: $(RESOURCE_GROUP), Location: $(LOCATION)"
+                az group create --name "$(RESOURCE_GROUP)" --location "$(LOCATION)"
+                az deployment group what-if \
+                  --name "$(DEPLOYMENT_NAME)" \
+                  --resource-group "$(RESOURCE_GROUP)" \
+                  --template-file "$(TEMPLATE_FILE)" \
+                  --parameters $(DEPLOY_PARAMETERS)
+
+  - stage: deployBicep
+    displayName: "Deploy - approve & apply"
+    dependsOn: preDeploy
+    jobs:
+      - job: waitForValidation
+        displayName: "Manual approval"
+        pool: server
+        timeoutInMinutes: 4320
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: 1440
+            inputs:
+              notifyUsers: "$(NOTIFY_USERS)"
+              instructions: "Please review the what-if output for build $(Build.BuildId) and approve to deploy."
+              onTimeout: "resume"
+
+      - job: deployAzure
+        displayName: "Deploy Bicep to Azure"
+        dependsOn: [waitForValidation]
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Apply deployment (group create)"
+            inputs:
+              azureSubscription: "$(AZURE_SUBSCRIPTION)"
+              scriptType: "bash"
+              scriptLocation: "inlineScript"
+              inlineScript: |
+                set -e
+                echo "Deploying to RG: $(RESOURCE_GROUP)"
+                az group create --name "$(RESOURCE_GROUP)" --location "$(LOCATION)"
+                az deployment group create \
+                  --name "$(DEPLOYMENT_NAME)" \
+                  --resource-group "$(RESOURCE_GROUP)" \
+                  --template-file "$(TEMPLATE_FILE)" \
+                  --parameters $(DEPLOY_PARAMETERS)
