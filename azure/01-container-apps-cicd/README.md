@@ -5,8 +5,8 @@
 ```bash
 RESOURCE_GROUP="rg-cicd-aca-dev-ase-001"
 LOCATION="australiasoutheast"
-CONTAINERAPPS_ENVIRONMENT="acae-cicd-aca-dev-ase-001"
-CONTAINERAPPS_APP="aca-albumapi-cicd-aca-dev-ase-001"
+CONTAINERAPPS_ENVIRONMENT="acae-cicd-ase-01"
+CONTAINERAPPS_APP="aca-album-ase-01"
 
 az group create \
   --name "$RESOURCE_GROUP" \

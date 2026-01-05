@@ -9,8 +9,8 @@ variables:
   TAG: "$(Build.BuildId)"
 
   RESOURCE_GROUP: "rg-cicd-aca-dev-ase-001"
-  CONTAINERAPPS_ENVIRONMENT: "acae-cicd-aca-dev-ase-001"
-  CONTAINERAPPS_APP: "aca-albumapi-cicd-aca-dev-ase-001"
+  CONTAINERAPPS_ENVIRONMENT: "acae-cicd-ase-01"
+  CONTAINERAPPS_APP: "aca-album-ase-01"
 
   APP_DIR: "azure/01-container-apps-cicd/src/albumapi-dotnet"
   DOCKERFILE_PATH: "$(APP_DIR)/Dockerfile"
