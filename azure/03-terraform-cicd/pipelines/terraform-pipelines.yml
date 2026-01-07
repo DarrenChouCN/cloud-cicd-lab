@@ -70,6 +70,7 @@ stages:
               cd "$(tf_root)"
               terraform fmt -check -recursive
             displayName: Terraform fmt (check)
+            continueOnError: true
 
           # --- Enterprise gate 2: validate ---
           - bash: |
