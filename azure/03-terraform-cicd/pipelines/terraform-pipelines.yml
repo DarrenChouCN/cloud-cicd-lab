@@ -1,0 +1,179 @@
+trigger: none
+pr: none
+
+variables:
+  # ---------- Terraform ----------
+  tf_version: "1.6.6"
+  tf_root: "03-terraform-cicd/src"
+  tf_working_dir: "$(Build.SourcesDirectory)/$(tf_root)"
+  tf_plan_file: "tfplan"
+
+  # ---------- Azure Service Connection (ADO) ----------
+  azure_service_connection: "azure-connection"
+
+  # ---------- Remote State Backend (Azure Storage) ----------
+  backend_rg_name: "rg-iac-tfstate-dev"
+  backend_storage_account_name: "stiacdevtfstate001"
+  backend_container_name: "tfstate"
+  backend_state_key: "webapp-dev.terraform.tfstate"
+
+  # ---------- Terraform variables (keep aligned with your updated tfvars / TF code) ----------
+  app_environment: "dev"
+  app_resource_group_name: "rg-iac-webapp-dev-ase"
+  app_resource_group_location: "australiasoutheast"
+  app_service_plan_name: "asp-iac-webapp-dev-ase"
+  app_service_name: "app-iac-webapp-dev-ase"
+  storage_account_name_prefix: "stiacdevwebappase"
+
+  # ---------- Manual approval ----------
+  approver_emails: "$(Build.RequestedForEmail)"
+
+  # ---------- Checkov ----------
+  enable_checkov: "true"
+  checkov_soft_fail: "true" # set to 'false' if you want the pipeline to fail on findings
+
+stages:
+  - stage: Terraform_init_plan
+    displayName: Terraform - Init & Plan
+    pool:
+      vmImage: ubuntu-latest
+
+    jobs:
+      - job: terraform_init_plan
+        displayName: terraform init + plan
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            displayName: Install Terraform $(tf_version)
+            inputs:
+              terraformVersion: $(tf_version)
+
+          # -------------------------------
+          # Checkov should be placed HERE (before plan). It scans IaC code.
+          # -------------------------------
+          - bash: |
+              set -euo pipefail
+              echo "Running Checkov against: $(tf_working_dir)"
+
+              args="--directory /tf --compact"
+              if [ "$(checkov_soft_fail)" = "true" ]; then
+                args="$args --soft-fail"
+              fi
+
+              docker run --rm -t \
+                -v "$(tf_working_dir)":/tf \
+                bridgecrew/checkov $args
+            displayName: Run Checkov (IaC security scan)
+            condition: and(succeeded(), eq(variables['enable_checkov'], 'true'))
+
+          - task: TerraformTaskV2@2
+            displayName: terraform init
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: "$(tf_working_dir)"
+              backendServiceArm: "$(azure_service_connection)"
+              backendAzureRmResourceGroupName: "$(backend_rg_name)"
+              backendAzureRmStorageAccountName: "$(backend_storage_account_name)"
+              backendAzureRmContainerName: "$(backend_container_name)"
+              backendAzureRmKey: "$(backend_state_key)"
+
+          - task: TerraformTaskV2@2
+            displayName: terraform plan
+            inputs:
+              provider: "azurerm"
+              command: "plan"
+              workingDirectory: "$(tf_working_dir)"
+              environmentServiceNameAzureRM: "$(azure_service_connection)"
+              commandOptions: >
+                -var="environment=$(app_environment)"
+                -var="resource_group_name=$(app_resource_group_name)"
+                -var="resource_group_location=$(app_resource_group_location)"
+                -var="app_service_plan_name=$(app_service_plan_name)"
+                -var="app_service_name=$(app_service_name)"
+                -var="storage_account_name=$(storage_account_name_prefix)"
+                -out $(tf_plan_file)
+
+          - bash: |
+              set -euo pipefail
+              cd "$(tf_working_dir)"
+              terraform show -json "$(tf_plan_file)" | jq '.' > tfplan.json
+              echo "Plan summary:"
+              cat tfplan.json | jq '[.resource_changes[] | {type: .type, name: (.change.after.name // .name), actions: .change.actions[]}]'
+            displayName: Create tfplan.json (human-readable)
+
+          - bash: |
+              set -euo pipefail
+              mkdir -p "$(Build.ArtifactStagingDirectory)/tfplan"
+              cp "$(tf_working_dir)/$(tf_plan_file)" "$(Build.ArtifactStagingDirectory)/tfplan/"
+              cp "$(tf_working_dir)/tfplan.json" "$(Build.ArtifactStagingDirectory)/tfplan/"
+            displayName: Stage tfplan artifacts
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish tfplan artifact
+            inputs:
+              targetPath: "$(Build.ArtifactStagingDirectory)/tfplan"
+              artifact: "tfplan"
+
+      - job: waitForValidation
+        displayName: Manual approval (validate plan)
+        dependsOn: terraform_init_plan
+        pool: server
+        timeoutInMinutes: 4320
+        steps:
+          - task: ManualValidation@0
+            inputs:
+              notifyUsers: "$(approver_emails)"
+              instructions: |
+                Please review tfplan.json and approve to proceed with terraform apply.
+                BuildId: $(Build.BuildId)
+
+  - stage: Terraform_apply
+    displayName: Terraform - Apply
+    dependsOn: Terraform_init_plan
+    pool:
+      vmImage: ubuntu-latest
+
+    jobs:
+      - job: terraform_apply
+        displayName: terraform apply
+        steps:
+          - checkout: self
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download tfplan artifact
+            inputs:
+              artifact: "tfplan"
+              path: "$(Pipeline.Workspace)/tfplan"
+
+          - bash: |
+              set -euo pipefail
+              cp "$(Pipeline.Workspace)/tfplan/$(tf_plan_file)" "$(tf_working_dir)/$(tf_plan_file)"
+            displayName: Copy tfplan into working directory
+
+          - task: TerraformInstaller@0
+            displayName: Install Terraform $(tf_version)
+            inputs:
+              terraformVersion: $(tf_version)
+
+          - task: TerraformTaskV2@2
+            displayName: terraform init
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: "$(tf_working_dir)"
+              backendServiceArm: "$(azure_service_connection)"
+              backendAzureRmResourceGroupName: "$(backend_rg_name)"
+              backendAzureRmStorageAccountName: "$(backend_storage_account_name)"
+              backendAzureRmContainerName: "$(backend_container_name)"
+              backendAzureRmKey: "$(backend_state_key)"
+
+          - task: TerraformTaskV2@2
+            displayName: terraform apply (from approved plan)
+            inputs:
+              provider: "azurerm"
+              command: "apply"
+              workingDirectory: "$(tf_working_dir)"
+              environmentServiceNameAzureRM: "$(azure_service_connection)"
+              commandOptions: "$(tf_plan_file)"
