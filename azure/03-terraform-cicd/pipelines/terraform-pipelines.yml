@@ -1,30 +1,56 @@
 trigger:
-  - main
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - azure/03-terraform-cicd/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - azure/03-terraform-cicd/**
 
 variables:
   tf_root: "$(Build.SourcesDirectory)/azure/03-terraform-cicd/src"
 
-  # backend (state)
-  backend_service_connection: "azure-connection"
-  backend_storage_account: "stiacdevtfstate001"
-  backend_container: "tfstate"
-  backend_key: "webapp-dev.terraform.tfstate"
+  # --- Azure service connection (WIF/OIDC) ---
+  azure_service_connection: "azure-connection"
 
-  # terraform version
-  terraform_version: "latest"
+  # --- Backend (remote state) ---
+  backend_storage_account_name: "stiacdevtfstate001"
+  backend_container_name: "tfstate"
+  backend_state_key: "webapp-dev.terraform.tfstate"
+
+  # --- Plan artifact ---
+  plan_file: "tfplan"
+  module_artifact_name: "terraformModule"
+
+  # --- Checkov ---
+  checkov_image: "bridgecrew/checkov:latest"
+  checkov_fail_on_findings: "true" # true=fail pipeline if checks fail
 
 stages:
+  # =========================
+  # Stage: PLAN (CI)
+  # =========================
   - stage: plan
     displayName: Terraform Plan
     jobs:
       - job: plan
+        displayName: plan
         pool:
           vmImage: ubuntu-latest
         steps:
+          - checkout: self
+
           - task: TerraformInstaller@1
             displayName: Install Terraform
             inputs:
-              terraformVersion: "$(terraform_version)"
+              terraformVersion: "latest"
 
           - task: TerraformTask@5
             displayName: Terraform Init
@@ -32,33 +58,78 @@ stages:
               provider: azurerm
               command: init
               workingDirectory: "$(tf_root)"
-              backendServiceArm: "$(backend_service_connection)"
+              backendServiceArm: "$(azure_service_connection)"
               backendAzureRmUseEntraIdForAuthentication: true
-              backendAzureRmStorageAccountName: "$(backend_storage_account)"
-              backendAzureRmContainerName: "$(backend_container)"
-              backendAzureRmKey: "$(backend_key)"
+              backendAzureRmStorageAccountName: "$(backend_storage_account_name)"
+              backendAzureRmContainerName: "$(backend_container_name)"
+              backendAzureRmKey: "$(backend_state_key)"
 
-          # - script: docker run ... checkov ...
-          #   displayName: Checkov scan
+          # --- Enterprise gate 1: fmt ---
+          - bash: |
+              set -euo pipefail
+              cd "$(tf_root)"
+              terraform fmt -check -recursive
+            displayName: Terraform fmt (check)
 
+          # --- Enterprise gate 2: validate ---
+          - bash: |
+              set -euo pipefail
+              cd "$(tf_root)"
+              terraform validate
+            displayName: Terraform validate
+
+          # --- Enterprise gate 3: Checkov ---
+          # JUnit output -> shows in ADO "Tests" tab
+          - bash: |
+              set -euo pipefail
+              cd "$(tf_root)"
+
+              # run checkov via docker
+              docker run --rm \
+                -v "$(pwd)":/tf \
+                "$(checkov_image)" \
+                --directory /tf \
+                --framework terraform \
+                --output junitxml \
+                --quiet > checkov-report.xml
+
+              if [ "$(checkov_fail_on_findings)" = "true" ]; then
+                # checkov returns non-zero on findings sometimes, but since we redirected output,
+                # we enforce failure by scanning report for failures.
+                # Simple rule: if report contains failures>0 then fail.
+                if grep -q 'failures="[1-9]' checkov-report.xml; then
+                  echo "Checkov found policy violations."
+                  exit 1
+                fi
+              fi
+            displayName: Checkov scan (Terraform)
+
+          - task: PublishTestResults@2
+            displayName: Publish Checkov results
+            condition: always()
+            inputs:
+              testResultsFormat: "JUnit"
+              testResultsFiles: "$(tf_root)/checkov-report.xml"
+              failTaskOnFailedTests: false
+
+          # --- Terraform Plan (produces output variable changesPresent) ---
           - task: TerraformTask@5
-            name: terraformPlan
+            name: tfPlan
             displayName: Terraform Plan
             inputs:
               provider: azurerm
               command: plan
               workingDirectory: "$(tf_root)"
-              commandOptions: "-out tfplan"
-              environmentServiceNameAzureRM: "$(backend_service_connection)"
+              environmentServiceNameAzureRM: "$(azure_service_connection)"
+              commandOptions: "-out $(plan_file) -detailed-exitcode"
 
+          # --- Package repo + plan file as artifact for apply stage ---
           - task: CopyFiles@2
             displayName: Create Module Artifact
             inputs:
               SourceFolder: "$(Build.SourcesDirectory)"
               Contents: |
                 **/*
-                !.terraform/**/*
-                !.git/**/*
                 !**/.terraform/**/*
                 !**/.git/**/*
               TargetFolder: "$(Build.ArtifactsStagingDirectory)"
@@ -69,47 +140,62 @@ stages:
             displayName: Publish Module Artifact
             inputs:
               targetPath: "$(Build.ArtifactsStagingDirectory)"
-              artifact: terraformModule
+              artifact: "$(module_artifact_name)"
               publishLocation: pipeline
 
+  # =========================
+  # Stage: APPLY (CD) with Approval
+  # =========================
   - stage: apply
     displayName: Terraform Apply
     dependsOn: plan
-    condition: and(succeeded(), eq(dependencies.plan.outputs['plan.terraformPlan.changesPresent'], 'true'))
+    condition: |
+      and(
+        succeeded(),
+        ne(variables['Build.Reason'], 'PullRequest'),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+        eq(dependencies.plan.outputs['plan.tfPlan.changesPresent'], 'true')
+      )
+
     jobs:
-      - job: apply
+      - deployment: apply
+        displayName: apply
+        environment: "dev" # approvals configured in ADO UI
         pool:
           vmImage: ubuntu-latest
-        steps:
-          - task: DownloadPipelineArtifact@2
-            displayName: Download Module Artifact
-            inputs:
-              source: current
-              artifactName: terraformModule
-              targetPath: "$(Build.SourcesDirectory)"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download Module Artifact
+                  inputs:
+                    source: current
+                    artifactName: "$(module_artifact_name)"
+                    targetPath: "$(Build.SourcesDirectory)"
 
-          - task: TerraformInstaller@1
-            displayName: Install Terraform
-            inputs:
-              terraformVersion: "$(terraform_version)"
+                - task: TerraformInstaller@1
+                  displayName: Install Terraform
+                  inputs:
+                    terraformVersion: "latest"
 
-          - task: TerraformTask@5
-            displayName: Terraform Init
-            inputs:
-              provider: azurerm
-              command: init
-              workingDirectory: "$(tf_root)"
-              backendServiceArm: "$(backend_service_connection)"
-              backendAzureRmUseEntraIdForAuthentication: true
-              backendAzureRmStorageAccountName: "$(backend_storage_account)"
-              backendAzureRmContainerName: "$(backend_container)"
-              backendAzureRmKey: "$(backend_key)"
+                - task: TerraformTask@5
+                  displayName: Terraform Init
+                  inputs:
+                    provider: azurerm
+                    command: init
+                    workingDirectory: "$(tf_root)"
+                    backendServiceArm: "$(azure_service_connection)"
+                    backendAzureRmUseEntraIdForAuthentication: true
+                    backendAzureRmStorageAccountName: "$(backend_storage_account_name)"
+                    backendAzureRmContainerName: "$(backend_container_name)"
+                    backendAzureRmKey: "$(backend_state_key)"
 
-          - task: TerraformTask@5
-            displayName: Terraform Apply
-            inputs:
-              provider: azurerm
-              command: apply
-              workingDirectory: "$(tf_root)"
-              commandOptions: "tfplan"
-              environmentServiceNameAzureRM: "$(backend_service_connection)"
+                - task: TerraformTask@5
+                  displayName: Terraform Apply
+                  inputs:
+                    provider: azurerm
+                    command: apply
+                    workingDirectory: "$(tf_root)"
+                    environmentServiceNameAzureRM: "$(azure_service_connection)"
+                    commandOptions: "$(plan_file)"
