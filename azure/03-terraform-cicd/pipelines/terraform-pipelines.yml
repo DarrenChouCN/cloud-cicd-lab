@@ -67,6 +67,21 @@ stages:
             displayName: Run Checkov (IaC security scan)
             condition: and(succeeded(), eq(variables['enable_checkov'], 'true'))
 
+          - task: AzureCLI@2
+            displayName: Debug - test storage access via OIDC
+            inputs:
+              azureSubscription: '$(azure_service_connection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az account show -o table
+                echo "Try listing containers (AAD auth)..."
+                az storage container list \
+                  --account-name "$(backend_storage_account_name)" \
+                  --auth-mode login \
+                  -o table
+
           - task: TerraformTaskV2@2
             displayName: terraform init
             inputs:
@@ -78,6 +93,8 @@ stages:
               backendAzureRmStorageAccountName: "$(backend_storage_account_name)"
               backendAzureRmContainerName: "$(backend_container_name)"
               backendAzureRmKey: "$(backend_state_key)"
+              commandOptions: >
+                -backend-config="use_azuread_auth=true"
 
           - task: TerraformTaskV2@2
             displayName: terraform plan
