@@ -4,7 +4,7 @@ pr: none
 variables:
   # ---------- Terraform ----------
   tf_version: "1.6.6"
-  tf_root: "03-terraform-cicd/src"
+  tf_root: "azure/03-terraform-cicd/src"
   tf_working_dir: "$(Build.SourcesDirectory)/$(tf_root)"
   tf_plan_file: "tfplan"
 
