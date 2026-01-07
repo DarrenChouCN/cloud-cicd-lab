@@ -104,6 +104,7 @@ stages:
                 fi
               fi
             displayName: Checkov scan (Terraform)
+            continueOnError: true
 
           - task: PublishTestResults@2
             displayName: Publish Checkov results

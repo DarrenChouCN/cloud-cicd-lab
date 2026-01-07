@@ -42,6 +42,7 @@ resource "azurerm_linux_web_app" "app" {
   https_only          = true
 
   site_config {
+    ftps_state = "Disabled"
     application_stack {
       dotnet_version = "6.0"
     }
@@ -59,12 +60,13 @@ resource "azurerm_linux_web_app" "app" {
 }
 
 resource "azurerm_storage_account" "storage" {
-  name                     = local.storage_account_name
-  resource_group_name      = azurerm_resource_group.rg.name
-  location                 = azurerm_resource_group.rg.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  min_tls_version          = "TLS1_2"
+  name                      = local.storage_account_name
+  resource_group_name       = azurerm_resource_group.rg.name
+  location                  = azurerm_resource_group.rg.location
+  account_tier              = "Standard"
+  account_replication_type  = "LRS"
+  min_tls_version           = "TLS1_2"
+  shared_access_key_enabled = false
 
   allow_nested_items_to_be_public = false
 
