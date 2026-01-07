@@ -39,6 +39,7 @@ resource "azurerm_linux_web_app" "app" {
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_service_plan.plan.location
   service_plan_id     = azurerm_service_plan.plan.id
+  https_only          = true
 
   site_config {
     application_stack {
@@ -63,6 +64,7 @@ resource "azurerm_storage_account" "storage" {
   location                 = azurerm_resource_group.rg.location
   account_tier             = "Standard"
   account_replication_type = "LRS"
+  min_tls_version          = "TLS1_2"
 
   allow_nested_items_to_be_public = false
 
